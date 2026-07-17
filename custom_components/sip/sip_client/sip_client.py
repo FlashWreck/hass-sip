@@ -40,10 +40,12 @@ class SipConfig:
     port: int = 5060
     username: str = ""
     password: str = ""
+    auth_username: str = ""
     domain: str = ""
     caller_id: str = ""
     register_expiration: int = 300
     local_rtp_port: int = 7078
+    outbound_proxy: str = ""
 
 
 @dataclass
@@ -206,19 +208,20 @@ class SipClient:
             self._schedule_register(10)
 
     async def _open_socket(self) -> bool:
+        target_server = self.config.outbound_proxy if self.config.outbound_proxy else self.config.server
         # Resolve via the loop so a slow DNS lookup never blocks the event loop.
         try:
             infos = await self._loop.getaddrinfo(
-                self.config.server,
+                target_server,
                 self.config.port,
                 family=socket.AF_INET,
                 type=socket.SOCK_DGRAM,
             )
         except OSError as err:
-            _LOGGER.warning("Cannot resolve SIP server '%s': %s", self.config.server, err)
+            _LOGGER.warning("Cannot resolve SIP target '%s': %s", target_server, err)
             return False
         if not infos:
-            _LOGGER.warning("No address found for SIP server '%s'", self.config.server)
+            _LOGGER.warning("No address found for SIP target '%s'", target_server)
             return False
         server_addr = infos[0][4]
 
@@ -420,14 +423,16 @@ class SipClient:
         uri = f"sip:{self.config.domain}"
         nc = "00000001"
         cnonce = sm.gen_random_hex(8)
+        auth_user = self.config.auth_username or self.config.username
         resp = digest_response(
-            self.config.username, self.config.password, realm, "REGISTER", uri,
+            auth_user, self.config.password, realm, "REGISTER", uri,
             nonce, "auth" if qop else "", nc, cnonce,
         )
         self._reg_cseq += 1
         self._reg_branch = sm.gen_branch()
         msg = self._build_register()
-        auth = self._digest_auth_line(proxy, realm, nonce, uri, resp, qop, nc, cnonce, opaque)
+        auth_user = self.config.auth_username or self.config.username
+        auth = self._digest_auth_line(proxy, auth_user, realm, nonce, uri, resp, qop, nc, cnonce, opaque)
         return msg.replace("Content-Length:", auth + "Content-Length:", 1)
 
     # -- outbound call --------------------------------------------------
@@ -584,15 +589,16 @@ class SipClient:
             uri = self._d_remote_target
             nc = "00000001"
             cnonce = sm.gen_random_hex(8)
+            auth_user = self.config.auth_username or self.config.username
             resp = digest_response(
-                self.config.username, self.config.password, realm, "INVITE", uri,
+                auth_user, self.config.password, realm, "INVITE", uri,
                 nonce, "auth" if qop else "", nc, cnonce,
             )
             self._d_cseq += 1
             self._d_branch = sm.gen_branch()
             msg = self._build_invite()
             auth = self._digest_auth_line(
-                proxy, realm, nonce, uri, resp, qop, nc, cnonce, opaque
+                proxy, auth_user, realm, nonce, uri, resp, qop, nc, cnonce, opaque
             )
             self._invite_msg = msg.replace("Content-Type:", auth + "Content-Type:", 1)
             self._send_raw(self._invite_msg)
@@ -638,10 +644,10 @@ class SipClient:
         _LOGGER.warning("Call failed: %s %s", m.status_code, m.reason)
         self._end_call()
 
-    def _digest_auth_line(self, proxy, realm, nonce, uri, resp, qop, nc, cnonce, opaque) -> str:
+    def _digest_auth_line(self, proxy, auth_user, realm, nonce, uri, resp, qop, nc, cnonce, opaque) -> str:
         head = "Proxy-Authorization: " if proxy else "Authorization: "
         auth = (
-            f'{head}Digest username="{self.config.username}", realm="{realm}", '
+            f'{head}Digest username="{auth_user}", realm="{realm}", '
             f'nonce="{nonce}", uri="{uri}", response="{resp}", algorithm=MD5'
         )
         if qop:
