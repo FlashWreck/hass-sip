@@ -251,7 +251,7 @@ class SipClient:
         if self._transport is None:
             return
         self._transport.sendto(msg.encode("utf-8"))
-        _LOGGER.log(5, "TX >>>\n%s", msg)
+
 
     def _emit(self, name: str, *args) -> None:
         """Invoke a user callback, never letting its failure break SIP logic."""
@@ -547,9 +547,19 @@ class SipClient:
             cseq = resp.header("CSeq").split()[0]
         except (ValueError, IndexError):
             cseq = str(self._d_cseq)
+            
+        if 300 <= resp.status_code < 700:
+            # ACK to a non-2xx response MUST use the exact same branch as the original request
+            branch = self._d_branch
+        else:
+            # ACK to a 2xx response is a new transaction, needs a new branch
+            branch = sm.gen_branch()
+            
+        via = f"SIP/2.0/UDP {self._local_ip}:{self._local_port};branch={branch};rport"
+            
         return (
             f"ACK {target} SIP/2.0\r\n"
-            f"Via: SIP/2.0/UDP {self._local_ip}:{self._local_port};branch={sm.gen_branch()};rport\r\n"
+            f"Via: {via}\r\n"
             "Max-Forwards: 70\r\n"
             f"From: {self._d_local}\r\n"
             f"To: {to or self._d_remote}\r\n"
@@ -964,7 +974,7 @@ class SipClient:
         # take down the UDP listener or the integration.
         try:
             raw = data.decode("utf-8", errors="replace")
-            _LOGGER.log(5, "RX <<<\n%s", raw)
+
             m = sm.parse_sip_message(raw)
             if m.is_request:
                 self._handle_request(m)
