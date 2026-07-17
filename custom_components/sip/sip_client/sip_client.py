@@ -114,6 +114,7 @@ class SipClient:
         self._reg_branch = ""
         self._reg_cseq = 0
         self._register_auth_tried = False
+        self._service_routes: str | None = None
 
         # current dialog
         self._d_call_id = ""
@@ -402,6 +403,8 @@ class SipClient:
             self._reg_attempts = 0
             self._set_state(SipState.REGISTERED)
             self._schedule_register(max(self.config.register_expiration // 2, 30))
+            if sr := m.header("Service-Route"):
+                self._service_routes = sr
             if not was:
                 _LOGGER.info("Registered with %s", self.config.server)
                 self._emit("on_registered")
@@ -525,10 +528,15 @@ class SipClient:
 
     def _build_invite(self) -> str:
         sdp = self._local_sdp()
-        return (
+        msg = (
             f"INVITE {self._d_remote_target} SIP/2.0\r\n"
             f"Via: SIP/2.0/UDP {self._local_ip}:{self._local_port};branch={self._d_branch};rport\r\n"
             "Max-Forwards: 70\r\n"
+        )
+        if self._service_routes:
+            msg += f"Route: {self._service_routes}\r\n"
+        
+        msg += (
             f"From: {self._d_local}\r\n"
             f"To: {self._d_remote}\r\n"
             f"Call-ID: {self._d_call_id}\r\n"
@@ -539,6 +547,7 @@ class SipClient:
             f"Content-Length: {len(sdp)}\r\n\r\n"
             f"{sdp}"
         )
+        return msg
 
     def _build_ack(self, resp: sm.SipMessage) -> str:
         to = resp.header("To")
@@ -557,16 +566,22 @@ class SipClient:
             
         via = f"SIP/2.0/UDP {self._local_ip}:{self._local_port};branch={branch};rport"
             
-        return (
+        msg = (
             f"ACK {target} SIP/2.0\r\n"
             f"Via: {via}\r\n"
             "Max-Forwards: 70\r\n"
+        )
+        if self._service_routes and 300 <= resp.status_code < 700:
+            msg += f"Route: {self._service_routes}\r\n"
+
+        msg += (
             f"From: {self._d_local}\r\n"
             f"To: {to or self._d_remote}\r\n"
             f"Call-ID: {self._d_call_id}\r\n"
             f"CSeq: {cseq} ACK\r\n"
             "Content-Length: 0\r\n\r\n"
         )
+        return msg
 
     def _handle_invite_response(self, m: sm.SipMessage) -> None:
         if not self._outbound:

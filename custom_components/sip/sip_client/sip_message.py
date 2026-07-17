@@ -100,9 +100,11 @@ def parse_sip_message(raw: str) -> SipMessage:
         name = _COMPACT_HEADERS.get(name, name)
         value = line[colon + 1:].strip()
         last_name = name
-        # Keep the first occurrence (topmost Via, etc.).
+        # Keep the first occurrence (topmost Via, etc.), except for Service-Route.
         if name not in msg.headers:
             msg.headers[name] = value
+        elif name == "service-route":
+            msg.headers[name] += f", {value}"
     return msg
 
 
